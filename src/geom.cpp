@@ -1533,7 +1533,10 @@ bool repair_multi_polygon(MultiPolygon &mp, bool knownInvalid, bool *wholeValid,
 // a bbox on the other side are passed to union_(); the rest can't overlap
 // anything and are copied through. union_() tests every ring that has no
 // intersections against the whole other geometry, so passing it two large
-// multipolygons that only meet along a seam is quadratic.
+// multipolygons that only meet along a seam is quadratic. The tests run inside a
+// RingPointIndexScope (ring_point_index.h): a point clearly outside a ring's box
+// is answered without walking the ring, big rings are walked through an index.
+// The answers are the same, so is the union.
 static void union_near(MultiPolygon &a, MultiPolygon &b, MultiPolygon &out) {
 	namespace bgi = boost::geometry::index;
 	typedef std::pair<Box, size_t> BoxIdx;
@@ -1576,17 +1579,27 @@ static void union_near(MultiPolygon &a, MultiPolygon &b, MultiPolygon &out) {
 		if (area >= sum * (1.0 - 1e-6)) return true;
 		if (expected < 0.0) {
 			MultiPolygon overlap;
-			boost::geometry::intersection(aNear, bNear, overlap);
+			{
+				RingPointIndexScope pointIndex;
+				boost::geometry::intersection(aNear, bNear, overlap);
+			}
 			expected = sum - boost::geometry::area(overlap);
 		}
 		return area >= expected * (1.0 - 1e-6);
 	};
 
 	MultiPolygon unified;
-	boost::geometry::union_(aNear, bNear, unified);
+	{
+		// aNear and bNear don't change during the call (the index refers to their rings)
+		RingPointIndexScope pointIndex;
+		boost::geometry::union_(aNear, bNear, unified);
+	}
 	if (!keepsArea(unified)) {
 		unified.clear();
-		boost::geometry::union_(bNear, aNear, unified);
+		{
+			RingPointIndexScope pointIndex;
+			boost::geometry::union_(bNear, aNear, unified);
+		}
 		if (!keepsArea(unified)) {
 			for (auto &p : aNear) out.push_back(std::move(p));
 			for (auto &p : bNear) out.push_back(std::move(p));
